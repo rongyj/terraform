@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"strconv"
 	"time"
 
 	tfe "github.com/hashicorp/go-tfe"
@@ -225,6 +226,59 @@ func (b *Remote) parseVariableValues(op *backend.Operation) (terraform.InputValu
 	}
 
 	return result, diags
+}
+
+func (b *Remote) costEstimate(stopCtx, cancelCtx context.Context, op *backend.Operation, r *tfe.Run) error {
+	if r.CostEstimate == nil {
+		return nil
+	}
+
+	if b.CLI != nil {
+		b.CLI.Output("\n------------------------------------------------------------------------\n")
+	}
+
+	// Retrieve the cost estimation to get its current status.
+	ce, err := b.client.CostEstimates.Read(stopCtx, r.CostEstimate.ID)
+	if err != nil {
+		return generalError("Failed to retrieve cost estimation", err)
+	}
+
+	msgPrefix := "Cost estimation"
+	if b.CLI != nil {
+		b.CLI.Output(b.Colorize().Color(msgPrefix + ":\n"))
+	}
+
+	// FIXME: we need to loop for this instead
+	if ce.Status == tfe.CostEstimateQueued {
+		return fmt.Errorf(msgPrefix + " still queued.")
+	}
+
+	var sign = "+"
+	delta, err := strconv.ParseFloat(ce.DeltaMonthlyCost, 64)
+	if err != nil {
+		if delta < 0 {
+			sign = "-"
+		}
+	}
+
+	b.CLI.Output(b.Colorize().Color(fmt.Sprintf("Resources: %s of %s estimated", ce.MatchedResourcesCount, ce.ResourcesCount)))
+	b.CLI.Output(b.Colorize().Color(fmt.Sprintf("\t$%s/mo %s$%s", ce.ProposedMonthlyCost, sign, ce.DeltaMonthlyCost)))
+
+	switch ce.Status {
+	case tfe.CostEstimateFinished:
+		if len(r.PolicyChecks) == 0 && r.HasChanges && op.Type == backend.OperationTypeApply && b.CLI != nil {
+			b.CLI.Output("\n------------------------------------------------------------------------")
+		}
+		return nil
+	case tfe.CostEstimateQueued:
+		return fmt.Errorf(msgPrefix + " not ready yet.")
+	case tfe.CostEstimateErrored:
+		return fmt.Errorf(msgPrefix + " errored.")
+	case tfe.CostEstimateCanceled:
+		return fmt.Errorf(msgPrefix + " canceled.")
+	default:
+		return fmt.Errorf("Unknown or unexpected cost estimation state: %s", ce.Status)
+	}
 }
 
 func (b *Remote) checkPolicy(stopCtx, cancelCtx context.Context, op *backend.Operation, r *tfe.Run) error {
