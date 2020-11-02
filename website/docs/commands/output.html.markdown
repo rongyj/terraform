@@ -82,5 +82,5 @@ command-line parser such as [jq](https://stedolan.github.io/jq/).
 For example, to query for the first instance's IP address:
 
 ```shell
-$ terraform output -json instance_ips | jq '.value[0]'
+$ terraform output -json instance_ips | jq '.[0]'
 ```
